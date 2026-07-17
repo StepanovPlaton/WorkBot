@@ -1,24 +1,52 @@
-# Пинг
+# 🏓 Most Bot
 
-Telegram-бот-компаньон веб-студии: задачи в OpenProject, напоминания о встречах и лёгкий юмор.
+> **Most Bot** — Telegram-бот для команды разработки: карточки задач из OpenProject и напоминания по спринту.
+>
+> Главное — это **простая настройка через `config.yaml`** и **запуск за пару минут**.
 
-**Пинг** — бодрый напарник, который «пингует» в нужный момент: подскажет по задаче и напомнит о созвоне.
+---
 
-## Быстрый старт
+## 🚀 О проекте
 
-### 1. Получить Telegram-токен
+- **Карточки задач из OpenProject** по `#номер`, `№номер` или ссылке на work package
+- **Напоминания по расписанию спринта** (2 недели): Daily, планирование, релиз, ретро, конец рабочего дня
+- **Теги команды** в напоминаниях (кроме конца дня) — после указания `schedule.chat_id`
+- **SOCKS5-прокси** для Telegram API, если прямой доступ недоступен
+- **Персонализация** имени, эмодзи и текстов через секцию `bot` (или дефолты из кода)
+- **Оформление карточек** через `openproject.display`: эмодзи, переводы, маппинг пользователей в Telegram
+- Запуск **локально** или через **Docker Compose**
 
-1. Откройте Telegram и найдите [@BotFather](https://t.me/BotFather).
-2. Отправьте команду `/newbot`.
-3. Укажите **display name** — как бот будет называться в списке чатов (например, `Пинг`).
-4. Укажите **username** — должен заканчиваться на `bot` (например, `most_ping_bot`).
-5. BotFather пришлёт сообщение с токеном вида `1234567890:AAH...`. Сохраните его — это `telegram.token` в конфиге.
+> 💡 **Важно:** Секреты и боевой конфиг живут только в `config.yaml` (он в `.gitignore`). В репозитории — шаблон `config.yaml.example` без токенов, IP и персональных данных.
 
-Дополнительно (по желанию):
+---
 
-- `/setdescription` — например: «Пингую по задачам и созвонам. OpenProject, напоминания, zero drama.»
-- `/setabouttext` — короткий текст «О боте», например: «🏓 Пинг — компаньон команды разработки»
-- `/setcommands` — список команд для меню в Telegram:
+## 📝 Подготовка
+
+Перед запуском выполните шаги:
+
+1. **Создайте Telegram-бота** у [@BotFather](https://t.me/BotFather)
+   - `/newbot` → display name и username (должен заканчиваться на `bot`)
+   - Сохраните токен — это `telegram.token`
+   - По желанию: `/setdescription`, `/setabouttext`, `/setcommands`
+2. **Создайте API-токен OpenProject**
+   - My account → Access tokens → + API token
+   - Токен кладите в `openproject.token`
+3. **Скопируйте конфиг и заполните**
+
+```bash
+cp config.yaml.example config.yaml
+```
+
+Заполните как минимум:
+
+- `telegram.token`
+- `openproject.host` / `openproject.port` / `openproject.scheme`
+- `openproject.token`
+- при необходимости — `telegram.proxy` и `schedule.*`
+
+4. **(Опционально)** Узнайте свой Telegram user id у [@userinfobot](https://t.me/userinfobot) и добавьте в `telegram.allowed_user_ids`
+
+### Команды для BotFather (`/setcommands`)
 
 ```
 start - Кратко, что умею
@@ -26,89 +54,83 @@ chatinfo - Chat id и топик для напоминаний
 upcoming - 3 ближайших напоминания с датой
 ```
 
-Узнать свой Telegram user id можно у [@userinfobot](https://t.me/userinfobot) — пригодится для `allowed_user_ids`.
+> После заполнения конфига можно запускать бота локально или в Docker.
 
-### 2. Настроить config.yaml
+---
 
-```bash
-cp config.yaml.example config.yaml
-```
+## ⚙️ Конфигурация
 
-Заполните:
+### SOCKS5-прокси для Telegram
 
-- `telegram.token` — токен от BotFather
-- `telegram.proxy` — SOCKS5-прокси, если Telegram недоступен напрямую (см. ниже)
-- `openproject.host`, `openproject.token` — как в проекте [auto_op](../auto_op)
-
-#### SOCKS5-прокси для Telegram
-
-Если Telegram API недоступен в вашем регионе, включите прокси:
+Если Telegram API недоступен напрямую:
 
 ```yaml
 telegram:
   proxy:
     enabled: true
-    scheme: socks5
+    scheme: socks5   # или socks5h
     host: 127.0.0.1
     port: 1080
-    username: ''
-    password: ''
+    username: ""
+    password: ""
 ```
 
-- `socks5` — DNS резолвится на стороне клиента (бота)
-- `socks5h` — DNS резолвится через прокси (удобнее, если прокси за границей)
+- `socks5` — DNS резолвится на стороне бота
+- `socks5h` — DNS резолвится через прокси
 
-В Docker `127.0.0.1` указывает на контейнер, а не на хост. Если прокси крутится на машине с Docker, используйте `host.docker.internal` (Windows/macOS) или IP хоста в сети.
+В Docker `127.0.0.1` — это контейнер. Если прокси на хосте: `host.docker.internal` (Windows/macOS) или IP хоста.
 
-Прокси используется только для Telegram API. OpenProject ходит напрямую.
+> Прокси используется только для Telegram. OpenProject ходит напрямую.
 
-#### Персонализация бота
+### Расписание и рабочий чат
 
-Тексты и характер настраиваются в секции `bot` в `config.yaml`. Если поле не указано — подставляются дефолты Пинга.
+1. Добавьте бота в рабочий чат / топик
+2. Вызовите `/chatinfo` в нужном месте
+3. Пропишите `schedule.chat_id` и при необходимости `schedule.message_thread_id`
+4. Задайте `sprint_anchor_date` — понедельник недели 1 двухнедельного спринта
 
-| Поле | Описание |
-|------|----------|
-| `name` | Имя бота |
-| `emoji` | Эмодзи в `/start` |
-| `unknown_command_replies` | Ответ на неизвестную команду |
-| `access_denied_replies` | Ответ при отказе в доступе |
-| `start_commands` | Текст `/start` |
+Пока `chat_id` пустой, теги команды в напоминания не добавляются.
 
-#### Карточки задач и эмодзи
+### Карточки задач
 
-Напишите в чат `#41` или ссылку на задачу — Пинг ответит карточкой с типом, статусом, временем в колонке, ответственным и story points.
+Напишите в чат `#41`, `№41` или ссылку на задачу — бот ответит карточкой.
 
-Пример ссылки: `http://host:8081/projects/zor/boards/37/details/41`
+Оформление — в `openproject.display`:
 
-Оформление настраивается в `openproject.display`:
+- `telegram_users` — имя в OpenProject → Telegram username (без `@`)
+- `emojis` / `translations` — эмодзи и подписи статусов, типов, отделов
+- `default_boards` — доски проектов по умолчанию
 
-```yaml
-openproject:
-  display:
-    story_points_field: storyPoints
-    project_departments:
-      zor: backend
-    emojis:
-      default: '📋'
-      projects:
-        zor: '⚡'
-      departments:
-        backend: '⚙️'
-        frontend: '🎨'
-      statuses:
-        New: '🆕'
-        'In progress': '🔧'
-      types:
-        Task: '📝'
-        Bug: '🐛'
-```
+---
 
-- `statuses` — колонки/статусы на доске
-- `projects` — смайлик проекта
-- `departments` + `project_departments` — смайлик отдела для проекта
-- `types` — тип задачи (Bug, Task, Feature…)
+## 🎯 Использование
 
-### 3. Запуск локально
+### Команды
+
+| Команда | Что делает |
+|---------|------------|
+| `/start` | Краткая справка |
+| `/chatinfo` | `chat_id` и `message_thread_id` для `schedule` |
+| `/upcoming` | Текущее время (TZ компании) и 3 ближайших напоминания |
+
+### Задачи
+
+- `#132` / `№132` / ссылка OpenProject → карточка задачи
+- Если в тексте есть слово `daily` / `daili` — бот **не** отвечает карточкой (чтобы не мешать стендапу)
+
+### Напоминания
+
+События из `schedule.events` уходят в указанный чат в заданное время:
+
+- Daily
+- Планирование
+- Релиз
+- Ретроспектива
+- Конец рабочего дня
+
+---
+
+## 💻 Запуск локально
 
 ```bash
 python -m venv .venv
@@ -117,9 +139,11 @@ pip install -r requirements.txt
 python -m most_bot
 ```
 
-При старте бот подключится к OpenProject и выведет в консоль список проектов. В Telegram: `/start`, `/chatinfo`, `/upcoming`, а также карточки задач по `#номер` или ссылке.
+При старте бот подключится к OpenProject и выведет список проектов в консоль.
 
-### 4. Запуск через Docker Compose
+---
+
+## 🐳 Запуск через Docker Compose
 
 ```bash
 docker compose up --build -d
@@ -128,33 +152,37 @@ docker compose logs -f most-bot
 
 Конфиг монтируется из `./config.yaml`.
 
-## Структура проекта
+---
+
+## 📁 Структура проекта
 
 ```
 most-bot/
-├── config.yaml.example   # шаблон конфигурации
+├── config.yaml.example      # шаблон конфигурации
 ├── docker-compose.yml
 ├── Dockerfile
 ├── requirements.txt
 └── most_bot/
-    ├── __main__.py       # точка входа
-    ├── config.py              # загрузка config.yaml
-    ├── personality.py         # сборка сообщений из конфига
-    ├── personality_defaults.py # дефолтные тексты Пинга
+    ├── __main__.py          # точка входа
+    ├── config.py            # загрузка config.yaml
+    ├── schedule.py          # расписание напоминаний
+    ├── schedule_defaults.py # дефолтные тексты событий
+    ├── personality.py       # сборка сообщений бота
+    ├── personality_defaults.py
     ├── bot/
-    │   ├── handlers.py   # команды Telegram
-    │   └── task_cards.py # карточки задач
+    │   ├── handlers.py      # команды Telegram
+    │   └── task_cards.py    # карточки задач
     └── openproject/
         ├── client.py
-        ├── task_refs.py  # парсинг #41 и ссылок
-        ├── tasks.py      # загрузка сводки по задаче
+        ├── task_refs.py     # парсинг # / № / ссылок
+        ├── tasks.py
         └── status_history.py
 ```
 
-## OpenProject API-токен
+---
 
-Создайте персональный API-токен в OpenProject:
+## 📎 Полезные ссылки
 
-**My account → Access tokens → + API token**
-
-Токен кладите в `openproject.token` в `config.yaml`.
+- [BotFather](https://t.me/BotFather) — создание бота
+- [userinfobot](https://t.me/userinfobot) — узнать свой Telegram user id
+- Стиль документации вдохновлён [HomeServerServices](https://github.com/StepanovPlaton/HomeServerServices)
