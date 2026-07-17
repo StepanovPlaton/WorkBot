@@ -82,7 +82,7 @@ def _extract_description(work_package: dict[str, Any]) -> str:
             return _finalize_description_text(_html_to_plain_text(html_value))
     if isinstance(description, str) and description.strip():
         return _finalize_description_text(_markdown_raw_to_plain(description))
-    return "Описание не указано."
+    return ""
 
 
 def _coerce_story_points(work_package: dict[str, Any], field_name: str) -> float | None:

@@ -141,9 +141,9 @@ def format_task_card(task: TaskSummary, display: DisplayConfig) -> str:
         _format_context_line(task, display),
         _format_meta_line(task, display),
         _format_people_line(task, display),
-        "",
-        f"<blockquote expandable>{_escape(description)}</blockquote>",
     ]
+    if description:
+        lines.extend(["", f"<blockquote expandable>{_escape(description)}</blockquote>"])
     return "\n".join(lines)
 
 
