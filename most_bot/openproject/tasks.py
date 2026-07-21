@@ -12,12 +12,22 @@ from most_bot.openproject.client import OpenProjectClient, OpenProjectError
 from most_bot.openproject.status_history import find_last_transition_to_status_at, parse_activity_timestamp
 
 
+# Плейсхолдеры картинок в description — потом в HTML/вложение Telegram.
+_IMAGE_PLACEHOLDER_RE = re.compile(r"⟦IMG:(\d+)⟧")
+_IMG_TAG_RE = re.compile(
+    r"<img\b[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*/?>",
+    re.IGNORECASE | re.DOTALL,
+)
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+
 @dataclass(frozen=True)
 class TaskSummary:
     work_package_id: str
     display_id: str
     subject: str
     description: str
+    description_image_urls: tuple[str, ...]
     task_type: str
     priority_name: str
     status_name: str
@@ -42,10 +52,36 @@ def _link_title(work_package: dict[str, Any], key: str, *, fallback: str = "—"
     return fallback
 
 
+def _absolutize_url(src: str, base_url: str) -> str:
+    src = src.strip()
+    if src.startswith("http://") or src.startswith("https://"):
+        return src
+    base = base_url.rstrip("/")
+    if not src.startswith("/"):
+        src = f"/{src}"
+    return f"{base}{src}"
+
+
+def _extract_images_as_placeholders(value: str, base_url: str) -> tuple[str, list[str]]:
+    """Заменяет img / markdown-картинки на ⟦IMG:n⟧ и собирает абсолютные URL."""
+    images: list[str] = []
+
+    def _replace(_match: re.Match[str], src: str) -> str:
+        url = _absolutize_url(src, base_url)
+        idx = len(images)
+        images.append(url)
+        return f"\n⟦IMG:{idx}⟧\n"
+
+    text = _IMG_TAG_RE.sub(lambda m: _replace(m, m.group(1)), value)
+    text = _MD_IMAGE_RE.sub(lambda m: _replace(m, m.group(1)), text)
+    return text, images
+
+
 def _markdown_raw_to_plain(value: str) -> str:
     text = html.unescape(value)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
     text = text.replace("\\*", "*")
     return text
 
@@ -64,25 +100,33 @@ def _html_to_plain_text(value: str) -> str:
 
 def _finalize_description_text(value: str) -> str:
     """Сохраняет переносы строк и абзацы, убирает лишние пробелы."""
-    lines = [" ".join(line.split()) for line in value.split("\n")]
+    lines = []
+    for line in value.split("\n"):
+        if _IMAGE_PLACEHOLDER_RE.fullmatch(line.strip()):
+            lines.append(line.strip())
+        else:
+            lines.append(" ".join(line.split()))
     text = "\n".join(lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
-def _extract_description(work_package: dict[str, Any]) -> str:
+def _extract_description(work_package: dict[str, Any], base_url: str) -> tuple[str, tuple[str, ...]]:
     description = work_package.get("description")
     if isinstance(description, dict):
         raw = description.get("raw")
         html_value = description.get("html")
 
         if isinstance(raw, str) and raw.strip():
-            return _finalize_description_text(_markdown_raw_to_plain(raw))
+            with_placeholders, images = _extract_images_as_placeholders(raw, base_url)
+            return _finalize_description_text(_markdown_raw_to_plain(with_placeholders)), tuple(images)
         if isinstance(html_value, str) and html_value.strip():
-            return _finalize_description_text(_html_to_plain_text(html_value))
+            with_placeholders, images = _extract_images_as_placeholders(html_value, base_url)
+            return _finalize_description_text(_html_to_plain_text(with_placeholders)), tuple(images)
     if isinstance(description, str) and description.strip():
-        return _finalize_description_text(_markdown_raw_to_plain(description))
-    return ""
+        with_placeholders, images = _extract_images_as_placeholders(description, base_url)
+        return _finalize_description_text(_markdown_raw_to_plain(with_placeholders)), tuple(images)
+    return "", ()
 
 
 def _coerce_story_points(work_package: dict[str, Any], field_name: str) -> float | None:
@@ -232,6 +276,7 @@ def fetch_task_summary(
     wp_id = str(work_package.get("id") or work_package_id)
     display_id = str(work_package.get("displayId") or wp_id)
     base_url = base_url.rstrip("/")
+    description, description_image_urls = _extract_description(work_package, base_url)
 
     board_id, board_name = resolve_board(
         client,
@@ -244,7 +289,8 @@ def fetch_task_summary(
         work_package_id=wp_id,
         display_id=display_id,
         subject=str(work_package.get("subject") or f"Задача #{display_id}").strip(),
-        description=_extract_description(work_package),
+        description=description,
+        description_image_urls=description_image_urls,
         task_type=_link_title(work_package, "type", fallback="Задача"),
         priority_name=_link_title(work_package, "priority", fallback="—"),
         status_name=status_name,

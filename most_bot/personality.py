@@ -18,7 +18,7 @@ def build_start_message(bot: BotConfig) -> str:
 
 
 def build_unknown_command_message(bot: BotConfig) -> str:
-    return _pick(bot.unknown_command_replies, fallback="Не понял. Напиши #номер задачи или /chatinfo.")
+    return _pick(bot.unknown_command_replies, fallback="Не понял. Напиши #номер задачи или /start.")
 
 
 def build_access_denied_message(bot: BotConfig) -> str:

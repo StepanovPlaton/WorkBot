@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -9,13 +8,6 @@ from urllib.parse import quote
 import yaml
 
 from most_bot.openproject.client import OpenProjectError
-from most_bot.schedule_defaults import (
-    DEFAULT_DAILY_MESSAGES,
-    DEFAULT_PLANNING_MESSAGES,
-    DEFAULT_RELEASE_MESSAGES,
-    DEFAULT_RETROSPECTIVE_MESSAGES,
-    DEFAULT_WORKDAY_END_MESSAGES,
-)
 from most_bot.personality_defaults import (
     DEFAULT_ACCESS_DENIED_REPLIES,
     DEFAULT_BOT_EMOJI,
@@ -208,166 +200,16 @@ class BotConfig:
 
 
 @dataclass
-class ScheduleExcludeRule:
-    sprint_week: int
-    weekday: str
-
-    @classmethod
-    def from_mapping(cls, raw: dict[str, Any]) -> ScheduleExcludeRule:
-        return cls(
-            sprint_week=int(raw.get("sprint_week") or 0),
-            weekday=str(raw.get("weekday", "") or "").strip().lower(),
-        )
-
-
-@dataclass
-class ScheduleEventConfig:
-    title: str
-    time: str
-    enabled: bool = True
-    weekdays: list[str] = field(default_factory=list)
-    sprint_weeks: list[int] = field(default_factory=list)
-    exclude: list[ScheduleExcludeRule] = field(default_factory=list)
-    messages: list[str] = field(default_factory=list)
-
-    @classmethod
-    def from_mapping(cls, raw: dict[str, Any], *, default_messages: list[str], default_title: str) -> ScheduleEventConfig:
-        exclude_raw = raw.get("exclude", [])
-        exclude: list[ScheduleExcludeRule] = []
-        if isinstance(exclude_raw, list):
-            for item in exclude_raw:
-                if isinstance(item, dict):
-                    exclude.append(ScheduleExcludeRule.from_mapping(item))
-
-        sprint_weeks_raw = raw.get("sprint_weeks", [])
-        sprint_weeks: list[int] = []
-        if isinstance(sprint_weeks_raw, list):
-            for item in sprint_weeks_raw:
-                try:
-                    sprint_weeks.append(int(item))
-                except (TypeError, ValueError):
-                    continue
-
-        return cls(
-            title=str(raw.get("title", default_title) or default_title),
-            time=str(raw.get("time", "11:00") or "11:00"),
-            enabled=bool(raw.get("enabled", True)),
-            weekdays=_coerce_string_list(raw.get("weekdays")),
-            sprint_weeks=sprint_weeks,
-            exclude=exclude,
-            messages=_coerce_string_list(raw.get("messages")) or list(default_messages),
-        )
-
-
-@dataclass
-class ScheduleConfig:
-    enabled: bool = True
-    timezone: str = "Asia/Yekaterinburg"
-    chat_id: int | None = None
-    message_thread_id: int | None = None
-    # Telegram username'ы (без @), которых не тегать в напоминаниях
-    mention_exclude: list[str] = field(default_factory=list)
-    # Понедельник недели планирования (неделя 1 двухнедельного спринта)
-    sprint_anchor_date: date = field(default_factory=lambda: date(2026, 7, 13))
-    workday_start: str = "10:00"
-    workday_end: str = "18:00"
-    events: dict[str, ScheduleEventConfig] = field(default_factory=dict)
-
-    @classmethod
-    def default_events(cls) -> dict[str, ScheduleEventConfig]:
-        return {
-            "daily": ScheduleEventConfig(
-                title="Daily",
-                time="11:00",
-                weekdays=["mon", "tue", "wed", "thu", "fri"],
-                exclude=[
-                    ScheduleExcludeRule(sprint_week=1, weekday="mon"),
-                    ScheduleExcludeRule(sprint_week=2, weekday="fri"),
-                ],
-                messages=list(DEFAULT_DAILY_MESSAGES),
-            ),
-            "planning": ScheduleEventConfig(
-                title="Планирование",
-                time="19:00",
-                weekdays=["mon"],
-                sprint_weeks=[1],
-                messages=list(DEFAULT_PLANNING_MESSAGES),
-            ),
-            "release": ScheduleEventConfig(
-                title="Релиз",
-                time="20:00",
-                weekdays=["thu"],
-                sprint_weeks=[2],
-                messages=list(DEFAULT_RELEASE_MESSAGES),
-            ),
-            "retrospective": ScheduleEventConfig(
-                title="Ретроспектива",
-                time="15:00",
-                weekdays=["fri"],
-                sprint_weeks=[2],
-                messages=list(DEFAULT_RETROSPECTIVE_MESSAGES),
-            ),
-            "workday_end": ScheduleEventConfig(
-                title="Конец рабочего дня",
-                time="18:00",
-                weekdays=["mon", "tue", "wed", "thu", "fri"],
-                messages=list(DEFAULT_WORKDAY_END_MESSAGES),
-            ),
-        }
-
-    @classmethod
-    def from_mapping(cls, raw: dict[str, Any]) -> ScheduleConfig:
-        defaults = cls(events=cls.default_events())
-        default_events = cls.default_events()
-        events_raw = raw.get("events", {}) if isinstance(raw.get("events"), dict) else {}
-
-        events: dict[str, ScheduleEventConfig] = {}
-        for key, default_event in default_events.items():
-            event_raw = events_raw.get(key, {}) if isinstance(events_raw.get(key), dict) else {}
-            merged = {
-                "title": event_raw.get("title", default_event.title),
-                "time": event_raw.get("time", default_event.time),
-                "enabled": event_raw.get("enabled", default_event.enabled),
-                "weekdays": event_raw.get("weekdays", default_event.weekdays),
-                "sprint_weeks": event_raw.get("sprint_weeks", default_event.sprint_weeks),
-                "exclude": event_raw.get(
-                    "exclude",
-                    [{"sprint_week": rule.sprint_week, "weekday": rule.weekday} for rule in default_event.exclude],
-                ),
-                "messages": event_raw.get("messages", default_event.messages),
-            }
-            events[key] = ScheduleEventConfig.from_mapping(
-                merged,
-                default_messages=default_event.messages,
-                default_title=default_event.title,
-            )
-
-        return cls(
-            enabled=bool(raw.get("enabled", defaults.enabled)),
-            timezone=str(raw.get("timezone", defaults.timezone) or defaults.timezone),
-            chat_id=_coerce_optional_int(raw.get("chat_id")),
-            message_thread_id=_coerce_optional_int(raw.get("message_thread_id")),
-            mention_exclude=_coerce_string_list(raw.get("mention_exclude")) or list(defaults.mention_exclude),
-            sprint_anchor_date=_coerce_date(raw.get("sprint_anchor_date")) or defaults.sprint_anchor_date,
-            workday_start=str(raw.get("workday_start", defaults.workday_start) or defaults.workday_start),
-            workday_end=str(raw.get("workday_end", defaults.workday_end) or defaults.workday_end),
-            events=events,
-        )
-
-
-@dataclass
 class AppConfig:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     openproject: OpenProjectConnectionConfig = field(default_factory=OpenProjectConnectionConfig)
     bot: BotConfig = field(default_factory=BotConfig)
-    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> AppConfig:
         telegram_raw = raw.get("telegram", {}) if isinstance(raw.get("telegram"), dict) else {}
         openproject_raw = raw.get("openproject", {}) if isinstance(raw.get("openproject"), dict) else {}
         bot_raw = raw.get("bot", {}) if isinstance(raw.get("bot"), dict) else {}
-        schedule_raw = raw.get("schedule", {}) if isinstance(raw.get("schedule"), dict) else {}
 
         proxy_raw = telegram_raw.get("proxy", {}) if isinstance(telegram_raw.get("proxy"), dict) else {}
         display_raw = openproject_raw.get("display", {}) if isinstance(openproject_raw.get("display"), dict) else {}
@@ -395,7 +237,6 @@ class AppConfig:
                 display=DisplayConfig.from_mapping(display_raw),
             ),
             bot=BotConfig.from_mapping(bot_raw),
-            schedule=ScheduleConfig.from_mapping(schedule_raw),
         )
 
     def validate(self) -> None:
@@ -445,20 +286,6 @@ class ConfigStore:
     def save(self, config: AppConfig) -> None:
         with self.config_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(asdict(config), handle, sort_keys=False, allow_unicode=True)
-
-
-def _coerce_date(value: Any) -> date | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    if isinstance(value, datetime):
-        return value.date()
-    text = str(value).strip()
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
 
 
 def _coerce_optional_int(value: Any) -> int | None:

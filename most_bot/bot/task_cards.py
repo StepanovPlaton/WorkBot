@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 
 from most_bot.bot.labels import LabelResolver
 from most_bot.config import DisplayConfig
@@ -8,6 +9,7 @@ from most_bot.openproject.tasks import TaskSummary
 
 MAX_DESCRIPTION_LENGTH = 1200
 BOARD_EMOJI = "🗂️"
+_IMAGE_PLACEHOLDER_RE = re.compile(r"⟦IMG:(\d+)⟧")
 
 
 class EmojiResolver:
@@ -131,10 +133,45 @@ def _format_people_line(task: TaskSummary, display: DisplayConfig) -> str:
     )
 
 
-def format_task_card(task: TaskSummary, display: DisplayConfig) -> str:
+def _render_description_html(
+    description: str,
+    image_urls: tuple[str, ...],
+    *,
+    attached_indices: set[int],
+) -> str:
+    """Экранирует текст; плейсхолдеры картинок → ссылка «изображение» или убирает (если вложение)."""
+    parts: list[str] = []
+    last = 0
+    for match in _IMAGE_PLACEHOLDER_RE.finditer(description):
+        parts.append(_escape(description[last:match.start()]))
+        idx = int(match.group(1))
+        if idx in attached_indices:
+            pass
+        elif 0 <= idx < len(image_urls):
+            url = html.escape(image_urls[idx], quote=True)
+            parts.append(f'<a href="{url}">изображение</a>')
+        last = match.end()
+    parts.append(_escape(description[last:]))
+
+    text = "".join(parts)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def format_task_card(
+    task: TaskSummary,
+    display: DisplayConfig,
+    *,
+    attached_image_indices: set[int] | None = None,
+) -> str:
     task_url = html.escape(task.web_url, quote=True)
     title_link = f'<a href="{task_url}">{_escape(task.subject)}</a>'
-    description = _truncate_description(task.description)
+    attached = attached_image_indices or set()
+    description = _render_description_html(
+        _truncate_description(task.description),
+        task.description_image_urls,
+        attached_indices=attached,
+    )
 
     lines = [
         f"<b>#{_escape(task.display_id)} · {title_link}</b>",
@@ -143,18 +180,33 @@ def format_task_card(task: TaskSummary, display: DisplayConfig) -> str:
         _format_people_line(task, display),
     ]
     if description:
-        lines.extend(["", f"<blockquote expandable>{_escape(description)}</blockquote>"])
+        lines.extend(["", f"<blockquote expandable>{description}</blockquote>"])
     return "\n".join(lines)
 
 
-def format_task_summary_block(task: TaskSummary, display: DisplayConfig) -> str:
+def format_task_summary_block(
+    task: TaskSummary,
+    display: DisplayConfig,
+    *,
+    attached_image_indices: set[int] | None = None,
+) -> str:
     """Компактный блок задачи (для нескольких в одном сообщении) — с описанием."""
-    return format_task_card(task, display)
+    return format_task_card(task, display, attached_image_indices=attached_image_indices)
 
 
-def format_task_cards(tasks: list[TaskSummary], display: DisplayConfig) -> str:
+def format_task_cards(
+    tasks: list[TaskSummary],
+    display: DisplayConfig,
+    *,
+    attached_image_indices: set[int] | None = None,
+) -> str:
     if not tasks:
         return ""
     if len(tasks) == 1:
-        return format_task_card(tasks[0], display)
+        return format_task_card(
+            tasks[0],
+            display,
+            attached_image_indices=attached_image_indices,
+        )
+    # Несколько задач — все картинки ссылками, без вложения
     return "\n\n".join(format_task_summary_block(task, display) for task in tasks)

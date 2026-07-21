@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from io import BytesIO
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -11,11 +12,7 @@ from most_bot.bot.task_cards import format_task_cards
 from most_bot.config import AppConfig
 from most_bot.openproject.client import OpenProjectClient, OpenProjectError
 from most_bot.openproject.task_refs import extract_task_references
-from most_bot.openproject.tasks import fetch_task_summary
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
-from most_bot.schedule import collect_upcoming_reminders, setup_schedule_jobs
+from most_bot.openproject.tasks import TaskSummary, fetch_task_summary
 from most_bot.personality import (
     build_access_denied_message,
     build_start_message,
@@ -26,6 +23,83 @@ logger = logging.getLogger(__name__)
 
 # В сообщениях про daily бот не отвечает карточками задач
 _IGNORE_TASK_REPLY_RE = re.compile(r"\bdail[yi]\b", re.IGNORECASE)
+_TELEGRAM_CAPTION_LIMIT = 1024
+
+_CONTENT_TYPE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _image_filename(content_type: str | None, url: str) -> str:
+    if content_type:
+        ext = _CONTENT_TYPE_EXTENSIONS.get(content_type.lower())
+        if ext:
+            return f"image{ext}"
+    lower = url.lower().split("?", 1)[0]
+    for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+        if lower.endswith(ext):
+            return f"image{ext if ext != '.jpeg' else '.jpg'}"
+    return "image.jpg"
+
+
+async def _reply_task_cards(
+    message,
+    text: str,
+    *,
+    photo: BytesIO | None = None,
+) -> None:
+    if photo is None:
+        await message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_to_message_id=message.message_id,
+        )
+        return
+
+    if len(text) <= _TELEGRAM_CAPTION_LIMIT:
+        await message.reply_photo(
+            photo=photo,
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=message.message_id,
+        )
+        return
+
+    await message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_to_message_id=message.message_id,
+    )
+    await message.reply_photo(photo=photo, reply_to_message_id=message.message_id)
+
+
+def _prepare_attachable_image(
+    client: OpenProjectClient,
+    summaries: list[TaskSummary],
+) -> tuple[set[int], BytesIO | None]:
+    """Для одной задачи: скачивает первую картинку. Остальные останутся ссылками."""
+    if len(summaries) != 1 or not summaries[0].description_image_urls:
+        return set(), None
+
+    image_url = summaries[0].description_image_urls[0]
+    try:
+        data, content_type = client.get_bytes(image_url)
+    except OpenProjectError as exc:
+        logger.warning("Failed to download description image %s: %s", image_url, exc)
+        return set(), None
+
+    if not data:
+        return set(), None
+
+    photo = BytesIO(data)
+    photo.name = _image_filename(content_type, image_url)
+    return {0}, photo
 
 
 class BotContext:
@@ -68,87 +142,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await message.reply_text(build_start_message(bot_context.config.bot))
-
-
-async def chatinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает chat_id и message_thread_id топика — для schedule в config.yaml."""
-    bot_context = _get_bot_context(context)
-    if not await _guard_access(update, bot_context.config):
-        return
-
-    message = update.effective_message
-    chat = update.effective_chat
-    if not message or not chat:
-        return
-
-    thread_id = message.message_thread_id
-    lines = [
-        "Чтобы Пинг писал напоминания сюда, пропиши в config.yaml:",
-        "",
-        "schedule:",
-        f"  chat_id: {chat.id}",
-        f"  message_thread_id: {thread_id if thread_id is not None else 'null  # общий чат без топиков'}",
-        "",
-        f"Чат: {chat.title or chat.id}",
-        f"Тип: {chat.type}",
-    ]
-    if thread_id is not None:
-        lines.append(f"Топик (thread): {thread_id}")
-    else:
-        lines.append("Топик: нет (сообщение не в форум-топике)")
-
-    await message.reply_text("\n".join(lines))
-
-
-async def upcoming_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает 3 ближайших запланированных напоминания с датой публикации."""
-    bot_context = _get_bot_context(context)
-    if not await _guard_access(update, bot_context.config):
-        return
-
-    message = update.effective_message
-    if not message:
-        return
-
-    schedule = bot_context.config.schedule
-    if not schedule.enabled:
-        await message.reply_text("Расписание выключено (schedule.enabled: false).")
-        return
-
-    now = datetime.now(tz=ZoneInfo(schedule.timezone))
-    now_label = now.strftime("%d.%m.%Y %H:%M")
-    upcoming = collect_upcoming_reminders(
-        schedule,
-        now=now,
-        bot_name=bot_context.config.bot.name,
-        telegram_users=bot_context.config.openproject.display.telegram_users,
-        limit=3,
-    )
-    if not upcoming:
-        await message.reply_text(
-            f"Сейчас: <b>{now_label}</b> ({schedule.timezone})\n\n"
-            "Ближайших напоминаний не нашлось (проверь events в config).",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    blocks: list[str] = [
-        f"Сейчас: <b>{now_label}</b> ({schedule.timezone})",
-        "",
-        "Ближайшие напоминания:",
-    ]
-    for index, item in enumerate(upcoming, start=1):
-        when = item.fire_at.strftime("%d.%m.%Y %H:%M")
-        blocks.append(
-            f"\n{index}. <b>{when}</b> — {item.title}\n"
-            f"🏓 <b>{item.title}</b>\n{item.message}"
-        )
-
-    await message.reply_text(
-        "\n".join(blocks),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -201,20 +194,25 @@ async def task_reference_handler(update: Update, context: ContextTypes.DEFAULT_T
             errors.append(f"#{reference.work_package_id}: {exc}")
 
     parts: list[str] = []
+    photo: BytesIO | None = None
+    attached_indices: set[int] = set()
+
     if summaries:
-        parts.append(format_task_cards(summaries, openproject.display))
+        attached_indices, photo = _prepare_attachable_image(bot_context.openproject, summaries)
+        parts.append(
+            format_task_cards(
+                summaries,
+                openproject.display,
+                attached_image_indices=attached_indices or None,
+            )
+        )
     if errors:
         parts.append("\n".join(errors))
 
     if not parts:
         return
 
-    await message.reply_text(
-        "\n\n".join(parts),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_to_message_id=message.message_id,
-    )
+    await _reply_task_cards(message, "\n\n".join(parts), photo=photo)
 
 
 def _mask_proxy_url(proxy_url: str) -> str:
@@ -238,11 +236,7 @@ def build_application(config: AppConfig, openproject: OpenProjectClient) -> Appl
     application.bot_data["bot_context"] = BotContext(config, openproject)
 
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("chatinfo", chatinfo_command))
-    application.add_handler(CommandHandler("upcoming", upcoming_command))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, task_reference_handler))
-
-    setup_schedule_jobs(application)
 
     return application

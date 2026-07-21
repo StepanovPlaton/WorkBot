@@ -69,6 +69,25 @@ class OpenProjectClient:
         except json.JSONDecodeError as exc:
             raise OpenProjectError(f"OpenProject returned invalid JSON at {url}") from exc
 
+    def get_bytes(self, path: str) -> tuple[bytes, str | None]:
+        """Скачивает бинарный контент (вложения). Возвращает (data, content_type)."""
+        url = self._build_url(path)
+        headers = {key: value for key, value in self.headers.items() if key.lower() != "content-type"}
+        request = urllib.request.Request(url, headers=headers, method="GET")
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = response.read()
+                content_type = response.headers.get_content_type()
+                return data, content_type
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise OpenProjectError(self._format_http_error(exc.code, body, url)) from exc
+        except urllib.error.URLError as exc:
+            raise OpenProjectError(
+                f"Could not connect to OpenProject at {url}: {exc.reason}"
+            ) from exc
+
     def _format_http_error(self, status: int, body: str, url: str) -> str:
         detail = ""
         try:
