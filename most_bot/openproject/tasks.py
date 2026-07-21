@@ -117,12 +117,13 @@ def _extract_description(work_package: dict[str, Any], base_url: str) -> tuple[s
         raw = description.get("raw")
         html_value = description.get("html")
 
-        if isinstance(raw, str) and raw.strip():
-            with_placeholders, images = _extract_images_as_placeholders(raw, base_url)
-            return _finalize_description_text(_markdown_raw_to_plain(with_placeholders)), tuple(images)
+        # HTML надёжнее для картинок (figure/img) и абзацев, чем raw с битыми <img> без src.
         if isinstance(html_value, str) and html_value.strip():
             with_placeholders, images = _extract_images_as_placeholders(html_value, base_url)
             return _finalize_description_text(_html_to_plain_text(with_placeholders)), tuple(images)
+        if isinstance(raw, str) and raw.strip():
+            with_placeholders, images = _extract_images_as_placeholders(raw, base_url)
+            return _finalize_description_text(_markdown_raw_to_plain(with_placeholders)), tuple(images)
     if isinstance(description, str) and description.strip():
         with_placeholders, images = _extract_images_as_placeholders(description, base_url)
         return _finalize_description_text(_markdown_raw_to_plain(with_placeholders)), tuple(images)

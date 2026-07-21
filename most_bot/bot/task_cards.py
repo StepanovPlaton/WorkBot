@@ -139,7 +139,12 @@ def _render_description_html(
     *,
     attached_indices: set[int],
 ) -> str:
-    """Экранирует текст; плейсхолдеры картинок → ссылка «изображение» или убирает (если вложение)."""
+    """Экранирует текст.
+
+    Успешно вложенные в Telegram картинки убираются.
+    Остальные (скачать не удалось) — текст «изображение» без API-ссылки
+    (ссылка /api/v3/... без авторизации не открывается).
+    """
     parts: list[str] = []
     last = 0
     for match in _IMAGE_PLACEHOLDER_RE.finditer(description):
@@ -148,8 +153,7 @@ def _render_description_html(
         if idx in attached_indices:
             pass
         elif 0 <= idx < len(image_urls):
-            url = html.escape(image_urls[idx], quote=True)
-            parts.append(f'<a href="{url}">изображение</a>')
+            parts.append("изображение")
         last = match.end()
     parts.append(_escape(description[last:]))
 
@@ -163,6 +167,7 @@ def format_task_card(
     display: DisplayConfig,
     *,
     attached_image_indices: set[int] | None = None,
+    expandable_description: bool = True,
 ) -> str:
     task_url = html.escape(task.web_url, quote=True)
     title_link = f'<a href="{task_url}">{_escape(task.subject)}</a>'
@@ -180,7 +185,8 @@ def format_task_card(
         _format_people_line(task, display),
     ]
     if description:
-        lines.extend(["", f"<blockquote expandable>{description}</blockquote>"])
+        tag = "blockquote expandable" if expandable_description else "blockquote"
+        lines.extend(["", f"<{tag}>{description}</{tag.split()[0]}>"])
     return "\n".join(lines)
 
 
@@ -189,9 +195,15 @@ def format_task_summary_block(
     display: DisplayConfig,
     *,
     attached_image_indices: set[int] | None = None,
+    expandable_description: bool = True,
 ) -> str:
     """Компактный блок задачи (для нескольких в одном сообщении) — с описанием."""
-    return format_task_card(task, display, attached_image_indices=attached_image_indices)
+    return format_task_card(
+        task,
+        display,
+        attached_image_indices=attached_image_indices,
+        expandable_description=expandable_description,
+    )
 
 
 def format_task_cards(
@@ -199,6 +211,7 @@ def format_task_cards(
     display: DisplayConfig,
     *,
     attached_image_indices: set[int] | None = None,
+    expandable_description: bool = True,
 ) -> str:
     if not tasks:
         return ""
@@ -207,6 +220,13 @@ def format_task_cards(
             tasks[0],
             display,
             attached_image_indices=attached_image_indices,
+            expandable_description=expandable_description,
         )
-    # Несколько задач — все картинки ссылками, без вложения
-    return "\n\n".join(format_task_summary_block(task, display) for task in tasks)
+    return "\n\n".join(
+        format_task_summary_block(
+            task,
+            display,
+            expandable_description=expandable_description,
+        )
+        for task in tasks
+    )

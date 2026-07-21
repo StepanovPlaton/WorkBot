@@ -4,8 +4,9 @@ import logging
 import re
 from io import BytesIO
 
-from telegram import Update
+from telegram import InputMediaPhoto, Update
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from most_bot.bot.task_cards import format_task_cards
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # В сообщениях про daily бот не отвечает карточками задач
 _IGNORE_TASK_REPLY_RE = re.compile(r"\bdail[yi]\b", re.IGNORECASE)
 _TELEGRAM_CAPTION_LIMIT = 1024
+_MAX_TELEGRAM_PHOTOS = 10
 
 _CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": ".jpg",
@@ -46,13 +48,44 @@ def _image_filename(content_type: str | None, url: str) -> str:
     return "image.jpg"
 
 
+def _download_description_images(
+    client: OpenProjectClient,
+    summaries: list[TaskSummary],
+) -> tuple[set[int], list[BytesIO]]:
+    """Скачивает картинки из описания одной задачи. Возвращает (индексы, файлы)."""
+    if len(summaries) != 1 or not summaries[0].description_image_urls:
+        return set(), []
+
+    attached_indices: set[int] = set()
+    photos: list[BytesIO] = []
+
+    for index, image_url in enumerate(summaries[0].description_image_urls[:_MAX_TELEGRAM_PHOTOS]):
+        try:
+            data, content_type = client.get_bytes(image_url)
+        except OpenProjectError as exc:
+            logger.warning("Failed to download description image %s: %s", image_url, exc)
+            continue
+
+        if not data:
+            continue
+
+        photo = BytesIO(data)
+        photo.name = _image_filename(content_type, image_url)
+        photos.append(photo)
+        attached_indices.add(index)
+
+    return attached_indices, photos
+
+
 async def _reply_task_cards(
     message,
     text: str,
     *,
-    photo: BytesIO | None = None,
+    photos: list[BytesIO] | None = None,
 ) -> None:
-    if photo is None:
+    photos = photos or []
+
+    if not photos:
         await message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
@@ -61,45 +94,55 @@ async def _reply_task_cards(
         )
         return
 
-    if len(text) <= _TELEGRAM_CAPTION_LIMIT:
-        await message.reply_photo(
-            photo=photo,
-            caption=text,
+    try:
+        if len(photos) == 1:
+            photo = photos[0]
+            photo.seek(0)
+            if len(text) <= _TELEGRAM_CAPTION_LIMIT:
+                await message.reply_photo(
+                    photo=photo,
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_to_message_id=message.message_id,
+                )
+            else:
+                await message.reply_text(
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_to_message_id=message.message_id,
+                )
+                photo.seek(0)
+                await message.reply_photo(photo=photo, reply_to_message_id=message.message_id)
+            return
+
+        # Несколько картинок — media group (ссылки на OP API без логина не открываются).
+        for photo in photos:
+            photo.seek(0)
+
+        if len(text) <= _TELEGRAM_CAPTION_LIMIT:
+            media: list[InputMediaPhoto] = [
+                InputMediaPhoto(media=photos[0], caption=text, parse_mode=ParseMode.HTML)
+            ]
+            media.extend(InputMediaPhoto(media=photo) for photo in photos[1:])
+            await message.reply_media_group(media=media, reply_to_message_id=message.message_id)
+        else:
+            await message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_to_message_id=message.message_id,
+            )
+            media = [InputMediaPhoto(media=photo) for photo in photos]
+            await message.reply_media_group(media=media, reply_to_message_id=message.message_id)
+    except TelegramError:
+        logger.exception("Failed to send task card with photos; falling back to text")
+        await message.reply_text(
+            text,
             parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
             reply_to_message_id=message.message_id,
         )
-        return
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_to_message_id=message.message_id,
-    )
-    await message.reply_photo(photo=photo, reply_to_message_id=message.message_id)
-
-
-def _prepare_attachable_image(
-    client: OpenProjectClient,
-    summaries: list[TaskSummary],
-) -> tuple[set[int], BytesIO | None]:
-    """Для одной задачи: скачивает первую картинку. Остальные останутся ссылками."""
-    if len(summaries) != 1 or not summaries[0].description_image_urls:
-        return set(), None
-
-    image_url = summaries[0].description_image_urls[0]
-    try:
-        data, content_type = client.get_bytes(image_url)
-    except OpenProjectError as exc:
-        logger.warning("Failed to download description image %s: %s", image_url, exc)
-        return set(), None
-
-    if not data:
-        return set(), None
-
-    photo = BytesIO(data)
-    photo.name = _image_filename(content_type, image_url)
-    return {0}, photo
 
 
 class BotContext:
@@ -194,16 +237,17 @@ async def task_reference_handler(update: Update, context: ContextTypes.DEFAULT_T
             errors.append(f"#{reference.work_package_id}: {exc}")
 
     parts: list[str] = []
-    photo: BytesIO | None = None
+    photos: list[BytesIO] = []
     attached_indices: set[int] = set()
 
     if summaries:
-        attached_indices, photo = _prepare_attachable_image(bot_context.openproject, summaries)
+        attached_indices, photos = _download_description_images(bot_context.openproject, summaries)
         parts.append(
             format_task_cards(
                 summaries,
                 openproject.display,
                 attached_image_indices=attached_indices or None,
+                expandable_description=not photos,
             )
         )
     if errors:
@@ -212,7 +256,7 @@ async def task_reference_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not parts:
         return
 
-    await _reply_task_cards(message, "\n\n".join(parts), photo=photo)
+    await _reply_task_cards(message, "\n\n".join(parts), photos=photos)
 
 
 def _mask_proxy_url(proxy_url: str) -> str:
