@@ -77,6 +77,12 @@ def _download_description_images(
     return attached_indices, photos
 
 
+def _photo_caption(text: str) -> str:
+    if len(text) <= _TELEGRAM_CAPTION_LIMIT:
+        return text
+    return text[: _TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…"
+
+
 async def _reply_task_cards(
     message,
     text: str,
@@ -94,47 +100,32 @@ async def _reply_task_cards(
         )
         return
 
+    caption = _photo_caption(text)
+
     try:
         if len(photos) == 1:
-            photo = photos[0]
-            photo.seek(0)
-            if len(text) <= _TELEGRAM_CAPTION_LIMIT:
-                await message.reply_photo(
-                    photo=photo,
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_to_message_id=message.message_id,
-                )
-            else:
-                await message.reply_text(
-                    text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                    reply_to_message_id=message.message_id,
-                )
-                photo.seek(0)
-                await message.reply_photo(photo=photo, reply_to_message_id=message.message_id)
-            return
-
-        # Несколько картинок — media group (ссылки на OP API без логина не открываются).
-        for photo in photos:
-            photo.seek(0)
-
-        if len(text) <= _TELEGRAM_CAPTION_LIMIT:
-            media: list[InputMediaPhoto] = [
-                InputMediaPhoto(media=photos[0], caption=text, parse_mode=ParseMode.HTML)
-            ]
-            media.extend(InputMediaPhoto(media=photo) for photo in photos[1:])
-            await message.reply_media_group(media=media, reply_to_message_id=message.message_id)
-        else:
-            await message.reply_text(
-                text,
+            photos[0].seek(0)
+            await message.reply_photo(
+                photo=photos[0],
+                caption=caption,
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                show_caption_above_media=True,
                 reply_to_message_id=message.message_id,
             )
-            media = [InputMediaPhoto(media=photo) for photo in photos]
-            await message.reply_media_group(media=media, reply_to_message_id=message.message_id)
+            return
+
+        for photo in photos:
+            photo.seek(0)
+        media: list[InputMediaPhoto] = [
+            InputMediaPhoto(
+                media=photos[0],
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                show_caption_above_media=True,
+            )
+        ]
+        media.extend(InputMediaPhoto(media=photo) for photo in photos[1:])
+        await message.reply_media_group(media=media, reply_to_message_id=message.message_id)
     except TelegramError:
         logger.exception("Failed to send task card with photos; falling back to text")
         await message.reply_text(
