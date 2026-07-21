@@ -124,16 +124,44 @@ async def _reply_task_cards(
                 show_caption_above_media=True,
             )
         ]
-        media.extend(InputMediaPhoto(media=photo) for photo in photos[1:])
+        # В sendMediaGroup show_caption_above_media должен совпадать у всех элементов альбома.
+        media.extend(
+            InputMediaPhoto(media=photo, show_caption_above_media=True) for photo in photos[1:]
+        )
         await message.reply_media_group(media=media, reply_to_message_id=message.message_id)
     except TelegramError:
-        logger.exception("Failed to send task card with photos; falling back to text")
-        await message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_to_message_id=message.message_id,
-        )
+        logger.exception("Failed to send task card with photos")
+        if len(photos) == 1:
+            await message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_to_message_id=message.message_id,
+            )
+            return
+        try:
+            for photo in photos:
+                photo.seek(0)
+            media_fallback: list[InputMediaPhoto] = [
+                InputMediaPhoto(
+                    media=photos[0],
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    show_caption_above_media=False,
+                )
+            ]
+            media_fallback.extend(
+                InputMediaPhoto(media=photo, show_caption_above_media=False) for photo in photos[1:]
+            )
+            await message.reply_media_group(media=media_fallback, reply_to_message_id=message.message_id)
+        except TelegramError:
+            logger.exception("Failed to send task card media group fallback")
+            await message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_to_message_id=message.message_id,
+            )
 
 
 class BotContext:
